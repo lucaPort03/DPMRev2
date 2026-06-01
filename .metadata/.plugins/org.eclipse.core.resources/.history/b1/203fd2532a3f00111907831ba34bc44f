@@ -1,0 +1,45 @@
+#ifndef DETECTION_H
+#define DETECTION_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define CALIB_SAMPLES   60000u
+#define THRESHOLD_K     4.0
+
+typedef struct {
+
+    /* ── Band-pass filter delay registers ── */
+    double x1, x2;
+    double y1, y2;
+    double y_bpfilt;
+
+    /* ── Calibration accumulators (Welford algorithm) ── */
+    uint32_t calib_count;
+    bool     calib_done;
+
+    /* Welford state for the RAW frequency */
+    double raw_mean;
+    double raw_M2;
+
+    /* Welford state for the FILTERED signal */
+    double filt_mean;
+    double filt_M2;
+    double filt_std;
+
+    /* ── Frozen detection parameters ── */
+    double baseline;
+    double threshold;
+
+    /* ── Runtime outputs ── */
+    double deviation;
+    bool   metal_det;
+
+} DetectorState;
+
+/* ── Public API ── */
+void Detector_Init     (DetectorState *s);
+bool Detector_Update   (DetectorState *s, double x_raw_hz);
+bool Detector_CalibDone(const DetectorState *s);
+
+#endif /* DETECTION_H */

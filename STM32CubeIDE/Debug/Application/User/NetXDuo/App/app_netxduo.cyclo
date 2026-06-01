@@ -1,0 +1,7 @@
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:103:6:MX_NetXDuo_Init	16
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:282:13:ip_address_change_notify_callback	1
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:297:13:nx_app_thread_entry	2
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:346:13:App_UDP_Server_Thread_Entry	11
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:448:13:App_Link_Thread_Entry	5
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:508:13:process_packet	5
+C:/Users/lport/STM32Cube/Example/DPMProj/NetXDuo/App/app_netxduo.c:532:6:calculate_LDC_packet_delays	1

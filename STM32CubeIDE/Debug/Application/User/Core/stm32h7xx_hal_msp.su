@@ -1,0 +1,5 @@
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/stm32h7xx_hal_msp.c:63:6:HAL_MspInit	16	static
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/stm32h7xx_hal_msp.c:85:6:HAL_ETH_MspInit	64	static
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/stm32h7xx_hal_msp.c:158:6:HAL_ETH_MspDeInit	16	static
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/stm32h7xx_hal_msp.c:204:6:HAL_UART_MspInit	232	static
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/stm32h7xx_hal_msp.c:252:6:HAL_UART_MspDeInit	16	static

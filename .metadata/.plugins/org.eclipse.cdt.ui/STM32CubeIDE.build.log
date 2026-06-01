@@ -1,0 +1,49 @@
+15:41:38 **** Incremental Build of configuration Debug for project STM32CubeIDE ****
+make -j32 all 
+arm-none-eabi-gcc "D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c" -mcpu=cortex-m7 -std=gnu11 -g3 -DDEBUG -DUSE_PWR_LDO_SUPPLY -DTX_INCLUDE_USER_DEFINE_FILE -DNX_INCLUDE_USER_DEFINE_FILE -DUSE_HAL_DRIVER -DSTM32H723xx -c -I../../Core/Inc -I../../AZURE_RTOS/App -I../../NetXDuo/App -I../../NetXDuo/Target -I../../Drivers/STM32H7xx_HAL_Driver/Inc -I../../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I../../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I../../Drivers/CMSIS/Include -I../../Drivers/BSP/Components/lan8742/ -I../../Middlewares/ST/netxduo/common/drivers/ethernet/ -I../../Middlewares/ST/netxduo/addons/dhcp/ -I../../Middlewares/ST/netxduo/common/inc/ -I../../Middlewares/ST/netxduo/ports/cortex_m7/gnu/inc/ -I../../Middlewares/ST/threadx/common/inc/ -I../../Middlewares/ST/threadx/ports/cortex_m7/gnu/inc/ -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Application/User/NetXDuo/App/app_netxduo.d" -MT"Application/User/NetXDuo/App/app_netxduo.o" --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "Application/User/NetXDuo/App/app_netxduo.o"
+arm-none-eabi-gcc "../Application/User/Core/detection.c" -mcpu=cortex-m7 -std=gnu11 -g3 -DDEBUG -DUSE_PWR_LDO_SUPPLY -DTX_INCLUDE_USER_DEFINE_FILE -DNX_INCLUDE_USER_DEFINE_FILE -DUSE_HAL_DRIVER -DSTM32H723xx -c -I../../Core/Inc -I../../AZURE_RTOS/App -I../../NetXDuo/App -I../../NetXDuo/Target -I../../Drivers/STM32H7xx_HAL_Driver/Inc -I../../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I../../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I../../Drivers/CMSIS/Include -I../../Drivers/BSP/Components/lan8742/ -I../../Middlewares/ST/netxduo/common/drivers/ethernet/ -I../../Middlewares/ST/netxduo/addons/dhcp/ -I../../Middlewares/ST/netxduo/common/inc/ -I../../Middlewares/ST/netxduo/ports/cortex_m7/gnu/inc/ -I../../Middlewares/ST/threadx/common/inc/ -I../../Middlewares/ST/threadx/ports/cortex_m7/gnu/inc/ -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Application/User/Core/detection.d" -MT"Application/User/Core/detection.o" --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "Application/User/Core/detection.o"
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c:422:13: warning: 'App_TCP_Thread_Entry' defined but not used [-Wunused-function]
+  422 | static VOID App_TCP_Thread_Entry(ULONG thread_input)
+      |             ^~~~~~~~~~~~~~~~~~~~
+In file included from D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c:30:
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c: In function 'App_TCP_Thread_Entry':
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.h:72:55: warning: 'source_ip_address' may be used uninitialized [-Wmaybe-uninitialized]
+   72 |                                                 (addr >> 24) & 0xff, \
+      |                                                 ~~~~~~^~~~~~
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c:458:13: note: in expansion of macro 'PRINT_DATA'
+  458 |             PRINT_DATA(source_ip_address, source_port, data_buffer);
+      |             ^~~~~~~~~~
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c:428:11: note: 'source_ip_address' was declared here
+  428 |     ULONG source_ip_address;
+      |           ^~~~~~~~~~~~~~~~~
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.h:71:49: warning: 'source_port' may be used uninitialized [-Wmaybe-uninitialized]
+   71 |                                                 printf("[%lu.%lu.%lu.%lu:%u] -> '%s' \n", \
+      |                                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   72 |                                                 (addr >> 24) & 0xff, \
+      |                                                 ~~~~~~~~~~~~~~~~~~~~~~
+   73 |                                                 (addr >> 16) & 0xff, \
+      |                                                 ~~~~~~~~~~~~~~~~~~~~~~
+   74 |                                                 (addr >> 8) & 0xff,  \
+      |                                                 ~~~~~~~~~~~~~~~~~~~~~~
+   75 |                                                 (addr & 0xff), port, data); \
+      |                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c:458:13: note: in expansion of macro 'PRINT_DATA'
+  458 |             PRINT_DATA(source_ip_address, source_port, data_buffer);
+      |             ^~~~~~~~~~
+D:/Fourth Year Team Project/DCMProj/NetXDuo/App/app_netxduo.c:429:11: note: 'source_port' was declared here
+  429 |     UINT  source_port;
+      |           ^~~~~~~~~~~
+arm-none-eabi-gcc -o "STM32CubeIDE.elf" @"objects.list"   -mcpu=cortex-m7 -T"D:\Fourth Year Team Project\DCMProj\STM32CubeIDE\STM32H723ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="STM32CubeIDE.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Finished building target: STM32CubeIDE.elf
+ 
+arm-none-eabi-size  STM32CubeIDE.elf 
+arm-none-eabi-objdump -h -S STM32CubeIDE.elf  > "STM32CubeIDE.list"
+   text	   data	    bss	    dec	    hex	filename
+  92784	    236	 307152	 400172	  61b2c	STM32CubeIDE.elf
+Finished building: default.size.stdout
+ 
+Finished building: STM32CubeIDE.list
+ 
+
+15:42:08 Build Finished. 0 errors, 3 warnings. (took 29s.801ms)
+

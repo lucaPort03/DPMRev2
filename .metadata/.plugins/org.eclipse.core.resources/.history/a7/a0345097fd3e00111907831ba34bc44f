@@ -1,0 +1,77 @@
+#ifndef DETECTION_H
+#define DETECTION_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* ================================================================
+ *  Calibration window
+ *
+ *  CALIB_SAMPLES = sample_rate_Hz x 10 seconds
+ *  Your loop calls build_ldc_string() as fast as possible.
+ *  Measure how many calls happen per second with a stopwatch or
+ *  a HAL_GetTick() delta and set this accordingly.
+ *  Safe starting point: 1000  (≈ 10 s at ~100 Hz loop rate)
+ * ================================================================ */
+#define CALIB_SAMPLES   60000u
+
+/* ================================================================
+ *  Detection threshold multiplier  k
+ *
+ *  threshold = k x std_dev(filtered signal during calibration)
+ *
+ *  k = 3.0  →  99.7 % of baseline noise is below threshold
+ *              (standard "3-sigma" rule, good starting point)
+ *
+ *  Raise k  → fewer false positives, but misses small pieces
+ *  Lower k  → catches smaller pieces, but more false positives
+ * ================================================================ */
+#define THRESHOLD_K     3.7
+
+#define N       41  // Sample length
+#define N_Delay        20 //Samples delay
+
+typedef struct {
+
+    /* ── Band-pass filter delay registers ── */
+	double buffer[N];
+	double sum;
+	int sample_N;         //index number of the current sample
+	bool buffer_filled;
+    double x1, x2;        /* previous raw inputs        */
+    double y1, y2;        /* previous filter outputs    */
+    double y_bpfilt;      /* current filter output (Hz) */
+
+    /* ── Calibration accumulators (Welford algorithm) ──
+     *    Only updated during the first CALIB_SAMPLES calls.
+     *    Completely frozen afterwards.                      */
+    uint32_t calib_count; /* how many samples collected so far  */
+    bool     calib_done;  /* true once calibration is complete  */
+
+    /* Welford state for the RAW frequency */
+    double raw_mean;
+    double raw_M2;
+
+    /* Welford state for the FILTERED signal */
+    double filt_mean;
+    double filt_M2;
+    double filt_std;      /* frozen std-dev of filtered signal  */
+
+    /* ── Frozen detection parameters ── */
+    double baseline;      /* mean raw frequency over calib window */
+    double threshold;     /* k x filt_std  (same units as y_bpfilt) */
+
+    /* ── Runtime outputs (updated every call after calib) ── */
+    double deviation;     /* = y_bpfilt  (BP filter removes DC)  */
+    bool   metal_det;
+
+
+} DetectorState;
+
+/* ── Public API ── */
+void Detector_Init   (DetectorState *s);
+bool Detector_Update (DetectorState *s, double x_raw_hz);
+bool Detector_CalibDone(const DetectorState *s);
+
+#endif /* DETECTION_H */
+

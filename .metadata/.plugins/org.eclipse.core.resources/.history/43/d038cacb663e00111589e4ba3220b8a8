@@ -1,0 +1,136 @@
+#include "detection.h"
+#include <math.h>
+
+
+static const double B0 =  0.05;
+static const double B1 =  0.00;
+static const double B2 = -0.05;
+static const double A1 = -1.80;
+static const double A2 =  0.81;
+
+/* ── Internal Welford helper ── */
+static void welford_step(double x, uint32_t n,
+                          double *mean, double *M2)
+{
+    double delta = x - *mean;
+    *mean       += delta / (double)n;
+    *M2         += delta * (x - *mean);   /* uses updated mean */
+}
+
+
+void Detector_Init(DetectorState *s)
+{
+	for(int i = 0; i < N; i++){
+		s->buffer[i]= 0.0;
+	}
+	s->sum = 0.0;
+	s->sample_N = 0;
+	s->buffer_filled = false;
+
+    s->x1 = 0.0;  s->x2 = 0.0;
+    s->y1 = 0.0;  s->y2 = 0.0;
+    s->y_bpfilt  = 0.0;
+
+    s->calib_count = 0u;
+    s->calib_done  = false;
+
+    s->raw_mean  = 0.0;  s->raw_M2  = 0.0;
+    s->filt_mean = 0.0;  s->filt_M2 = 0.0;
+    s->filt_std  = 0.0;
+
+    s->baseline  = 0.0;
+    s->threshold = 0.0;
+    s->deviation = 0.0;
+    s->metal_det = false;
+}
+
+bool Detector_Update(DetectorState *s, double x_raw_hz)
+{
+    /* ── Run the band-pass filter every call ── */
+//   s->y_bpfilt = (B0 * x_raw_hz)
+//                + (B1 * s->x1)
+//                + (B2 * s->x2)
+//                - (A1 * s->y1)
+//                - (A2 * s->y2);
+//
+//    s->x2 = s->x1;    s->x1 = x_raw_hz;
+//    s->y2 = s->y1;    s->y1 = s->y_bpfilt;
+	s->sum -= s->buffer[s->sample_N];         // Remove the oldest sample from sum
+	s->buffer[s->sample_N] = x_raw_hz;        // Overwrite it with the newest sample
+    s->sum += x_raw_hz;                   // Add the newest sample to sum
+    int center_idx = (s->sample_N + N - N_Delay) % N;
+    double x_center = s->buffer[center_idx];
+
+    s->sample_N++;
+        if (s->sample_N >= N) {
+            s->sample_N = 0;
+            s->buffer_filled = true; /* We now have enough future data to do the math */
+        }
+
+        /* Wait silently until the buffer is full of 41 samples */
+        if (!s->buffer_filled) {
+            return false;
+        }
+
+        /* ── 3. The "Square Method" Math: X_filtered = X - X_mean ── */
+        double mean = s->sum / (double)N;
+        s->y_bpfilt = x_center - mean;
+
+    /* ───────────────── PHASE 1: Calibration ───────────────── */
+    if (!s->calib_done)
+    {
+        s->calib_count++;
+
+
+        welford_step(x_raw_hz, s->calib_count,
+                     &s->raw_mean, &s->raw_M2);
+
+        if (s->calib_count > 400u)
+        {
+            uint32_t filt_n = s->calib_count - 400u;
+            welford_step(s->y_bpfilt, filt_n,
+                         &s->filt_mean, &s->filt_M2);
+        }
+
+        /* ── Final calibration sample: freeze parameters ── */
+        if (s->calib_count >= CALIB_SAMPLES)
+        {
+            s->baseline = s->raw_mean;
+
+            uint32_t filt_n = s->calib_count - 20u;
+            if (filt_n >= 2u) {
+                s->filt_std = sqrt(s->filt_M2 / (double)(filt_n - 1u));
+            } else {
+                s->filt_std = 0.0;
+            }
+
+            s->threshold = THRESHOLD_K * s->filt_std;
+            s->calib_done = true;
+        }
+
+        s->metal_det = false;
+        s->deviation = 0.0;
+        return false;
+    }
+
+    /* ───────────────── PHASE 2: Detection ─────────────────── */
+    s->deviation = s->y_bpfilt;//s->y_bpfilt;   /* band-pass output is already zero-mean */
+
+    if (!s->metal_det) {
+        if (s->deviation > s->threshold) {
+            s->metal_det = true;
+        }
+    } else {
+        if (s->deviation < s->threshold) {
+            s->metal_det = false;
+        }
+    }
+
+    return s->metal_det;
+}
+
+bool Detector_CalibDone(const DetectorState *s)
+{
+    return s->calib_done;
+}
+

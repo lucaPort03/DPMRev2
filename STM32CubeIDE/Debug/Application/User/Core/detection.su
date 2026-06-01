@@ -1,0 +1,4 @@
+../Application/User/Core/detection.c:10:13:welford_step	40	static
+../Application/User/Core/detection.c:18:6:Detector_Init	16	static
+../Application/User/Core/detection.c:40:6:Detector_Update	32	static
+../Application/User/Core/detection.c:162:6:Detector_CalibDone	16	static

@@ -1,0 +1,10 @@
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:104:5:main	5
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:165:6:SystemClock_Config	4
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:225:13:MX_ETH_Init	2
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:274:13:MX_USART3_UART_Init	5
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:322:13:MX_GPIO_Init	1
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:391:1:__io_putchar	1
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:402:6:Success_Handler	1
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:418:6:MPU_Config	1
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:475:6:HAL_TIM_PeriodElapsedCallback	2
+C:/Users/lport/STM32Cube/Example/DPMProj/Core/Src/main.c:493:6:Error_Handler	1

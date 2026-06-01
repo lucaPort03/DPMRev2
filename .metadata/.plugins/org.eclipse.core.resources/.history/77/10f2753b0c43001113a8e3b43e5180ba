@@ -1,0 +1,72 @@
+#ifndef DETECTION_H
+#define DETECTION_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define CALIB_SAMPLES   60000u
+#define THRESHOLD_K     6.0
+/* ================================================================
+ *  CONFIRM_SAMPLES
+ *
+ *  How many consecutive samples must exceed |threshold| before
+ *  metal_det is set true.
+ *
+ *  Set to 1: triggers on the very first crossing — correct for
+ *  1–3 sample spikes at high belt speeds. Raising this would
+ *  reject real detections as noise at this sample rate.
+ * ================================================================ */
+#define CONFIRM_SAMPLES  1u
+
+/* ================================================================
+ *  RELEASE_RATIO
+ *
+ *  metal_det clears only when |deviation| drops below:
+ *      threshold * RELEASE_RATIO
+ *
+ *  Prevents rapid on/off flickering when the deviation hovers
+ *  near the threshold boundary on the trailing edge of a piece.
+ *  0.5 = signal must fall to half the trigger level to release.
+ * ================================================================ */
+#define RELEASE_RATIO    0.5
+
+typedef struct {
+
+    /* ── Band-pass filter delay registers ── */
+    double x1, x2;
+    double y1, y2;
+    double y_bpfilt;
+
+    /* ── Calibration accumulators (Welford algorithm) ── */
+    uint32_t calib_count;
+    bool     calib_done;
+
+    /* Welford state for the RAW frequency */
+    double raw_mean;
+    double raw_M2;
+
+    /* Welford state for the FILTERED signal */
+    double filt_mean;
+    double filt_M2;
+    double filt_std;
+
+    /* ── Frozen detection parameters ── */
+    double baseline;
+    double threshold;
+
+    /* ── Runtime outputs ── */
+    double   deviation;       /* signed BP filter output            */
+    double   abs_deviation;   /* |deviation| — used for detection   */
+    bool     metal_det;
+
+    /* Internal confirmation counter */
+    uint32_t confirm_count;
+
+} DetectorState;
+
+/* ── Public API ── */
+void Detector_Init     (DetectorState *s);
+bool Detector_Update   (DetectorState *s, double x_raw_hz);
+bool Detector_CalibDone(const DetectorState *s);
+
+#endif /* DETECTION_H */

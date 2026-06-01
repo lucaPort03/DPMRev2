@@ -1,0 +1,750 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    app_netxduo.c
+  * @author  MCD Application Team
+  * @brief   NetXDuo applicative file
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2020-2021 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+
+/* USER CODE END Header */
+
+/* USER CODE BEGIN 1 */
+
+/* USER CODE END 1 */
+
+/* Includes ------------------------------------------------------------------*/
+#include "app_netxduo.h"
+
+/* Private includes ----------------------------------------------------------*/
+#include "nxd_dhcp_client.h"
+/* USER CODE BEGIN Includes */
+#include "__ldc1101_driver.h"
+#include "__ldc1101_hal.h"
+#include "detection.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  magic[2];       // 0xAA, 0xBB
+    uint16_t seq;            // Packet counter
+    uint32_t timestamp_ms;   // STM32 Tick
+
+    // Raw Hardware Data
+    uint16_t ldc[32];
+    uint16_t rp[32];
+
+    // GUI Processed Data
+    uint32_t freq_hz[32];    // Physical frequency
+    int32_t  deviation[32];  // Bandpass filter output
+    uint8_t  is_metal[32];   // 1 (Yes) or 0 (No)
+    uint8_t  calib_done[32]; // 1 (Yes) or 0 (No)
+} AMCISS_Packet_t;
+#pragma pack(pop)
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+TX_THREAD      NxAppThread;
+NX_PACKET_POOL NxAppPool;
+NX_IP          NetXDuoEthIpInstance;
+TX_SEMAPHORE   DHCPSemaphore;
+NX_DHCP        DHCPClient;
+/* USER CODE BEGIN PV */
+
+TX_THREAD AppTCPThread;
+TX_THREAD AppUDPThread;
+TX_THREAD AppLinkThread;
+
+
+
+ULONG IpAddress;
+ULONG NetMask;
+
+NX_TCP_SOCKET TCPSocket;
+NX_UDP_SOCKET UDPSocket;
+DetectorState myDetector[LDC1101_SENSOR_COUNT];
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+static VOID nx_app_thread_entry (ULONG thread_input);
+static VOID ip_address_change_notify_callback(NX_IP *ip_instance, VOID *ptr);
+/* USER CODE BEGIN PFP */
+static VOID App_TCP_Thread_Entry(ULONG thread_input);
+static VOID App_Link_Thread_Entry(ULONG thread_input);
+static VOID App_UDP_Thread_Entry (ULONG thread_input);
+static VOID App_UDP_Server_Thread_Entry (ULONG thread_input);
+
+static void build_ldc_packet(AMCISS_Packet_t *pkt);
+static uint16_t build_ldc_string(char *buf, uint16_t buf_size, int start_sensor, int end_sensor);
+
+
+
+
+/* USER CODE END PFP */
+
+/**
+  * @brief  Application NetXDuo Initialization.
+  * @param memory_ptr: memory pointer
+  * @retval int
+  */
+UINT MX_NetXDuo_Init(VOID *memory_ptr)
+{
+  UINT ret = NX_SUCCESS;
+  TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL*)memory_ptr;
+  CHAR *pointer;
+
+  /* USER CODE BEGIN MX_NetXDuo_MEM_POOL */
+
+  /* USER CODE END MX_NetXDuo_MEM_POOL */
+
+  /* USER CODE BEGIN 0 */
+  printf("Nx_UDP_Echo_Client application started..\n");
+  /* USER CODE END 0 */
+
+  /* Initialize the NetXDuo system. */
+  nx_system_initialize();
+
+    /* Allocate the memory for packet_pool.  */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer, NX_APP_PACKET_POOL_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+
+  /* Create the Packet pool to be used for packet allocation,
+   * If extra NX_PACKET are to be used the NX_APP_PACKET_POOL_SIZE should be increased
+   */
+  ret = nx_packet_pool_create(&NxAppPool, "NetXDuo App Pool", DEFAULT_PAYLOAD_SIZE, pointer, NX_APP_PACKET_POOL_SIZE);
+
+  if (ret != NX_SUCCESS)
+  {
+    return NX_POOL_ERROR;
+  }
+
+    /* Allocate the memory for Ip_Instance */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer, Nx_IP_INSTANCE_THREAD_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+
+   /* Create the main NX_IP instance */
+  ret = nx_ip_create(&NetXDuoEthIpInstance, "NetX Ip instance", NX_APP_DEFAULT_IP_ADDRESS, NX_APP_DEFAULT_NET_MASK, &NxAppPool, nx_stm32_eth_driver,
+                     pointer, Nx_IP_INSTANCE_THREAD_SIZE, NX_APP_INSTANCE_PRIORITY);
+
+  if (ret != NX_SUCCESS)
+  {
+    return NX_NOT_SUCCESSFUL;
+  }
+
+    /* Allocate the memory for ARP */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer, DEFAULT_ARP_CACHE_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+
+  /* Enable the ARP protocol and provide the ARP cache size for the IP instance */
+
+  /* USER CODE BEGIN ARP_Protocol_Initialization */
+
+  /* USER CODE END ARP_Protocol_Initialization */
+
+  ret = nx_arp_enable(&NetXDuoEthIpInstance, (VOID *)pointer, DEFAULT_ARP_CACHE_SIZE);
+
+  if (ret != NX_SUCCESS)
+  {
+    return NX_NOT_SUCCESSFUL;
+  }
+
+  /* Enable the ICMP */
+
+  /* USER CODE BEGIN ICMP_Protocol_Initialization */
+
+  /* USER CODE END ICMP_Protocol_Initialization */
+
+  ret = nx_icmp_enable(&NetXDuoEthIpInstance);
+
+  if (ret != NX_SUCCESS)
+  {
+    return NX_NOT_SUCCESSFUL;
+  }
+
+  /* Enable TCP Protocol */
+
+  /* USER CODE BEGIN TCP_Protocol_Initialization */
+  /* Allocate the memory for TCP server thread   */
+
+
+  /* Create the TCP server thread */
+//  ret = tx_thread_create(&AppTCPThread, "App TCP Thread", App_TCP_Thread_Entry, 0, pointer, NX_APP_THREAD_STACK_SIZE,
+//                         NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY, TX_NO_TIME_SLICE, TX_DONT_START);
+
+  if (CLIENT == 1)
+  {
+      if (tx_byte_allocate(byte_pool, (VOID **) &pointer, NX_APP_THREAD_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+      {
+          return TX_POOL_ERROR;
+      }
+
+      ret = tx_thread_create(&AppUDPThread, "App UDP Thread", App_UDP_Thread_Entry, 0,
+                             pointer, NX_APP_THREAD_STACK_SIZE,
+                             NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY,
+                             10,              // time slice - was TX_NO_TIME_SLICE
+                             TX_DONT_START);
+  }
+
+else if (CLIENT == 0)
+{
+
+	if (tx_byte_allocate(byte_pool, (VOID **) &pointer, 6*  DEFAULT_ARP_CACHE_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+		  {
+		    return TX_POOL_ERROR;
+		  }
+
+	ret = tx_thread_create(&AppUDPThread, "App UDP Server Thread", App_UDP_Server_Thread_Entry, 0,
+	                           pointer, 6 * 1024,
+	                           NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY,
+	                           TX_NO_TIME_SLICE, TX_DONT_START);
+}
+
+  if (ret != TX_SUCCESS)
+  {
+    return NX_NOT_SUCCESSFUL;
+  }
+  /* USER CODE END TCP_Protocol_Initialization */
+
+  ret = nx_tcp_enable(&NetXDuoEthIpInstance);
+
+  if (ret != NX_SUCCESS)
+  {
+    return NX_NOT_SUCCESSFUL;
+  }
+
+  /* Enable the UDP protocol required for  DHCP communication */
+
+  /* USER CODE BEGIN UDP_Protocol_Initialization */
+
+  /* USER CODE END UDP_Protocol_Initialization */
+
+  ret = nx_udp_enable(&NetXDuoEthIpInstance);
+
+  if (ret != NX_SUCCESS)
+  {
+    return NX_NOT_SUCCESSFUL;
+  }
+
+   /* Allocate the memory for main thread   */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer, NX_APP_THREAD_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+
+  /* Create the main thread */
+  ret = tx_thread_create(&NxAppThread, "NetXDuo App thread", nx_app_thread_entry , 0, pointer, NX_APP_THREAD_STACK_SIZE,
+                         NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY, TX_NO_TIME_SLICE, TX_AUTO_START);
+
+  if (ret != TX_SUCCESS)
+  {
+    return TX_THREAD_ERROR;
+  }
+
+  /* Create the DHCP client */
+
+  /* USER CODE BEGIN DHCP_Protocol_Initialization */
+
+  /* USER CODE END DHCP_Protocol_Initialization */
+
+
+
+  /* USER CODE BEGIN MX_NetXDuo_Init */
+  /* Allocate the memory for Link thread   */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer,NX_APP_THREAD_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+
+  /* Create the Link thread */
+  ret = tx_thread_create(&AppLinkThread, "App Link Thread", App_Link_Thread_Entry, 0, pointer, NX_APP_THREAD_STACK_SIZE,
+                         LINK_PRIORITY, LINK_PRIORITY, TX_NO_TIME_SLICE, TX_AUTO_START);
+
+  if (ret != TX_SUCCESS)
+  {
+    return NX_NOT_ENABLED;
+  }
+
+  /* USER CODE END MX_NetXDuo_Init */
+
+  return ret;
+}
+
+/**
+* @brief  ip address change callback.
+* @param ip_instance: NX_IP instance
+* @param ptr: user data
+* @retval none
+*/
+static VOID ip_address_change_notify_callback(NX_IP *ip_instance, VOID *ptr)
+{
+  /* USER CODE BEGIN ip_address_change_notify_callback */
+	nx_ip_address_set(&NetXDuoEthIpInstance, STM_IP_ADDRESS, STM_NETMASK);
+	nx_ip_gateway_address_set(&NetXDuoEthIpInstance, STM_GATEWAY);
+	tx_thread_resume(&AppUDPThread);
+  /* USER CODE END ip_address_change_notify_callback */
+}
+
+/**
+* @brief  Main thread entry.
+* @param thread_input: ULONG user argument used by the thread entry
+* @retval none
+*/
+static VOID nx_app_thread_entry (ULONG thread_input)
+{
+  /* USER CODE BEGIN Nx_App_Thread_Entry 0 */
+
+  /* USER CODE END Nx_App_Thread_Entry 0 */
+
+  UINT ret = NX_SUCCESS;
+  ULONG actual_status;
+
+  /* USER CODE BEGIN Nx_App_Thread_Entry 1 */
+  nx_ip_address_set(&NetXDuoEthIpInstance, STM_IP_ADDRESS, STM_NETMASK);
+      nx_ip_gateway_address_set(&NetXDuoEthIpInstance, STM_GATEWAY);
+      printf("Static IP set\n");
+
+
+      ret = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0,
+                                             NX_IP_LINK_ENABLED,
+                                             &actual_status, NX_WAIT_FOREVER);
+          if (ret != NX_SUCCESS)
+          {
+              printf("Link down\n");
+              Error_Handler();
+          }
+
+          printf("Link up - starting UDP server\n");
+          tx_thread_resume(&AppUDPThread);
+  /* USER CODE END Nx_App_Thread_Entry 1 */
+
+  /* register the IP address change callback */
+  ret = nx_ip_address_change_notify(&NetXDuoEthIpInstance, ip_address_change_notify_callback, NULL);
+  if (ret != NX_SUCCESS)
+  {
+    /* USER CODE BEGIN IP address change callback error */
+
+    /* USER CODE END IP address change callback error */
+  }
+
+  /* start the DHCP client */
+  /* USER CODE BEGIN Nx_App_Thread_Entry 2 */
+
+  /* USER CODE END Nx_App_Thread_Entry 2 */
+
+}
+/* USER CODE BEGIN 2 */
+/**
+* @brief  TCP thread entry.
+* @param thread_input: thread user data
+* @retval none
+*/
+
+static VOID App_TCP_Thread_Entry(ULONG thread_input)
+{
+  UINT ret;
+  UINT count = 0;
+
+  ULONG bytes_read;
+  UCHAR data_buffer[512];
+
+  ULONG source_ip_address;
+  UINT source_port;
+
+  NX_PACKET *server_packet;
+  NX_PACKET *data_packet;
+
+  /* create the TCP socket */
+  ret = nx_tcp_socket_create(&NetXDuoEthIpInstance, &TCPSocket, "TCP Server Socket", NX_IP_NORMAL, NX_FRAGMENT_OKAY,
+                             NX_IP_TIME_TO_LIVE, WINDOW_SIZE, NX_NULL, NX_NULL);
+  if (ret != NX_SUCCESS)
+  {
+    Error_Handler();
+  }
+
+  /* bind the client socket for the DEFAULT_PORT */
+  ret =  nx_tcp_client_socket_bind(&TCPSocket, DEFAULT_PORT, NX_WAIT_FOREVER);
+
+  if (ret != NX_SUCCESS)
+  {
+    Error_Handler();
+  }
+
+  /* connect to the remote server on the specified port */
+  ret = nx_tcp_client_socket_connect(&TCPSocket, UDP_SERVER_ADDRESS, TCP_SERVER_PORT, NX_WAIT_FOREVER);
+
+  if (ret != NX_SUCCESS)
+  {
+    Error_Handler();
+  }
+
+  while(1)
+  {
+    TX_MEMSET(data_buffer, '\0', sizeof(data_buffer));
+
+    /* allocate the packet to send over the TCP socket */
+    ret = nx_packet_allocate(&NxAppPool, &data_packet, NX_TCP_PACKET, TX_WAIT_FOREVER);
+
+    if (ret != NX_SUCCESS)
+    {
+      break;
+    }
+
+
+    ret = nx_packet_data_append(data_packet, (VOID *)DEFAULT_MESSAGE, sizeof(DEFAULT_MESSAGE), &NxAppPool, TX_WAIT_FOREVER);
+
+        if (ret != NX_SUCCESS)
+        {
+          nx_packet_release(data_packet);
+          break;
+        }
+
+
+    /* send the packet over the TCP socket */
+    ret = nx_tcp_socket_send(&TCPSocket, data_packet, DEFAULT_TIMEOUT);
+
+    if (ret != NX_SUCCESS)
+    {
+      break;
+    }
+
+    /* wait for the server response */
+    ret = nx_tcp_socket_receive(&TCPSocket, &server_packet, DEFAULT_TIMEOUT);
+
+    if (ret == NX_SUCCESS)
+    {
+      /* get the server IP address and  port */
+      //nx_tcp_source_extract(server_packet, &source_ip_address, &source_port);
+
+      /* retrieve the data sent by the server */
+      nx_packet_data_retrieve(server_packet, data_buffer, &bytes_read);
+
+      /* print the received data */
+      PRINT_DATA(source_ip_address, source_port, data_buffer);
+
+      /* release the server packet */
+      nx_packet_release(server_packet);
+
+      /* toggle the green led on success */
+      HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+    }
+    else
+    {
+      /* no message received exit the loop */
+      break;
+    }
+  }
+
+  /* release the allocated packets */
+  nx_packet_release(server_packet);
+
+  /* disconnect the socket */
+  nx_tcp_socket_disconnect(&TCPSocket, DEFAULT_TIMEOUT);
+
+  /* unbind the socket */
+  nx_tcp_client_socket_unbind(&TCPSocket);
+
+  /* delete the socket */
+  nx_tcp_socket_delete(&TCPSocket);
+
+  /* print test summary on the UART */
+  if (count == MAX_PACKET_COUNT + 1)
+  {
+    printf("\n-------------------------------------\n\tSUCCESS : %u / %u packets sent\n-------------------------------------\n", count - 1, MAX_PACKET_COUNT);
+    Success_Handler();
+  }
+  else
+  {
+    printf("\n-------------------------------------\n\tFAIL : %u / %u packets sent\n-------------------------------------\n", count - 1, MAX_PACKET_COUNT);
+    Error_Handler();
+  }
+}
+
+static VOID App_UDP_Thread_Entry(ULONG thread_input)
+{
+    for (int i = 0; i < LDC1101_SENSOR_COUNT; i++) {
+        Detector_Init(&myDetector[i]);
+    }
+
+    UINT ret;
+    NX_PACKET *data_packet;
+    static uint16_t seq = 0; // Packet sequence counter
+
+    ret = nx_udp_socket_create(&NetXDuoEthIpInstance, &UDPSocket, "UDP Client Socket", NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 200);
+    if (ret != NX_SUCCESS) { Error_Handler(); }
+
+    ret = nx_udp_socket_bind(&UDPSocket, DEFAULT_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) { Error_Handler(); }
+
+    while(1)
+    {
+        AMCISS_Packet_t pkt;
+        pkt.magic[0]     = 0xAA;
+        pkt.magic[1]     = 0xBB;
+        pkt.seq          = seq++;
+        pkt.timestamp_ms = HAL_GetTick();
+        build_ldc_packet(&pkt);
+
+        // 3. Allocate the Ethernet packet
+        ret = nx_packet_allocate(&NxAppPool, &data_packet, NX_UDP_PACKET, TX_WAIT_FOREVER);
+        if (ret == NX_SUCCESS)
+        {
+            // 4. Append the RAW BINARY STRUCT memory to the packet!
+            ret = nx_packet_data_append(data_packet, (VOID *)&pkt, sizeof(AMCISS_Packet_t),
+                                        &NxAppPool, TX_WAIT_FOREVER);
+
+            if (ret == NX_SUCCESS)
+            {
+                UINT send_status = nx_udp_socket_send(&UDPSocket, data_packet, UDP_SERVER_ADDRESS, TCP_SERVER_PORT);
+
+                if (send_status != NX_SUCCESS) {
+                    nx_packet_release(data_packet);
+                }
+            }
+            else
+            {
+                nx_packet_release(data_packet);
+            }
+        }
+
+        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+
+        // Give time back to the RTOS
+        tx_thread_relinquish();
+    }
+}
+
+static VOID App_UDP_Server_Thread_Entry(ULONG thread_input)
+{
+    // ALL declarations at the top
+    UINT ret;
+    NX_PACKET *recv_packet;
+    NX_PACKET *fwd_packet;
+    NX_UDP_SOCKET FwdSocket;        // <-- moved here
+    UCHAR recv_buffer[1472];
+    ULONG bytes_copied;
+    ULONG sender_ip;
+    UINT  sender_port;
+    // Socket to receive from client STM32
+    ret = nx_udp_socket_create(&NetXDuoEthIpInstance, &UDPSocket, "UDP Server Socket",
+                               NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 200);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    ret = nx_udp_socket_bind(&UDPSocket, DEFAULT_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    // Forward socket to PC
+    ret = nx_udp_socket_create(&NetXDuoEthIpInstance, &FwdSocket, "UDP Fwd Socket",
+                               NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 200);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    ret = nx_udp_socket_bind(&FwdSocket, PC_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    printf("UDP Server started - Listening on port %u, forwarding to PC\n", DEFAULT_PORT);
+
+    while (1)
+    {
+        ret = nx_udp_socket_receive(&UDPSocket, &recv_packet, NX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) continue;
+
+        nx_udp_source_extract(recv_packet, &sender_ip, &sender_port);
+        TX_MEMSET(recv_buffer, '\0', sizeof(recv_buffer));
+        ret = nx_packet_data_retrieve(recv_packet, recv_buffer, &bytes_copied);
+        nx_packet_release(recv_packet);
+
+        if (ret != NX_SUCCESS) continue;
+
+        ret = nx_packet_allocate(&NxAppPool, &fwd_packet, NX_UDP_PACKET, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) continue;
+
+        ret = nx_packet_data_append(fwd_packet, recv_buffer, bytes_copied, &NxAppPool, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS)
+        {
+            nx_packet_release(fwd_packet);
+            continue;
+        }
+
+        ret = nx_udp_socket_send(&FwdSocket, fwd_packet, PC_IP_ADDRESS, PC_PORT);
+        if (ret != NX_SUCCESS)
+        {
+            nx_packet_release(fwd_packet);
+            continue;
+        }
+
+        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+    }
+}
+
+static VOID App_Link_Thread_Entry(ULONG thread_input)
+{
+  ULONG actual_status;
+  UINT linkdown = 0, status;
+  printf("link thread started");
+
+  while(1)
+  {
+    /* Send request to check if the Ethernet cable is connected. */
+    status = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0, NX_IP_LINK_ENABLED,
+                                      &actual_status, 10);
+
+    if(status == NX_SUCCESS)
+    {
+      if(linkdown == 1)
+      {
+        linkdown = 0;
+
+        /* The network cable is connected. */
+        printf("The network cable is connected.\n");
+
+        /* Send request to enable PHY Link. */
+        nx_ip_driver_direct_command(&NetXDuoEthIpInstance, NX_LINK_ENABLE,
+                                      &actual_status);
+
+        /* Send request to check if an address is resolved. */
+        status = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0, NX_IP_ADDRESS_RESOLVED,
+                                      &actual_status, 10);
+        if(status == NX_SUCCESS)
+        {
+
+          /* Wait until an IP address is ready */
+
+
+        	nx_ip_address_set(&NetXDuoEthIpInstance, STM_IP_ADDRESS, STM_NETMASK);
+        	nx_ip_gateway_address_set(&NetXDuoEthIpInstance, STM_GATEWAY);
+
+        	printf("Link reconnected. Static IP reapplied: 192.168.0.50\n");
+          PRINT_IP_ADDRESS(IpAddress);
+        }
+
+      }
+    }
+    else
+    {
+      if(0 == linkdown)
+      {
+        linkdown = 1;
+        /* The network cable is not connected. */
+        printf("The network cable is not connected.\n");
+        nx_ip_driver_direct_command(&NetXDuoEthIpInstance, NX_LINK_DISABLE,
+                                      &actual_status);
+      }
+    }
+
+    tx_thread_sleep(NX_APP_CABLE_CONNECTION_CHECK_PERIOD);
+  }
+}
+
+//static uint16_t build_ldc_string(char *buf, uint16_t buf_size, int start_sensor, int end_sensor)
+//{
+//    uint16_t offset = 0;
+//    double   f_clkin = 16000000.0;
+//
+//    // Change the loop to use the new parameters instead of LDC1101_SENSOR_COUNT
+//    for (int i = start_sensor; i < end_sensor; i++)
+//    {
+//        /* ── Wait for conversion ready (1 ms timeout) ── */
+//        uint32_t timeout = HAL_GetTick();
+//        while ((ldc1101_readByte_sensor(i, 0x20) & 0x20) == 0)
+//        {
+//            if (HAL_GetTick() - timeout > 1u) break;
+//        }
+//
+//        /* ── Read sensor and compute frequency ── */
+//        uint16_t raw     = ldc1101_getLData_sensor(i);
+//        uint32_t freq_hz = (raw > 0u)
+//                           ? (uint32_t)((f_clkin * 384.0) / (3.0 * (double)raw))
+//                           : 0u;
+//
+//        /* ── Run detection algorithm ── */
+//        bool is_metal = Detector_Update(&myDetector[i], (double)freq_hz);
+//
+//        /* ── Calculate the true Absolute Filtered frequency ── */
+//        int absolute_filtered = (int)(myDetector[i].baseline + myDetector[i].y_bpfilt);
+//
+//        /* ── Format packet string ── */
+//        offset += snprintf(buf + offset, buf_size - offset,
+//            "L%d R:%u F:%lu C:%d M:%d BP:%d DV:%d TH:%d BL:%d MN:%d SD:%d \r\n",
+//            i + 1,
+//            (unsigned int)raw,
+//            (unsigned long)freq_hz,
+//            (int)myDetector[i].calib_done,
+//            (int)is_metal,
+//            absolute_filtered,
+//            (int)myDetector[i].deviation,
+//            (int)myDetector[i].threshold,
+//            (int)myDetector[i].baseline,
+//            (int)myDetector[i].raw_mean,
+//            (int)myDetector[i].filt_std);
+//
+//        /* Guard against buffer overrun */
+//        if (offset >= buf_size - 1u) break;
+//    }
+//
+//    return offset;
+//}
+
+//}
+static void build_ldc_packet(AMCISS_Packet_t *pkt)
+{
+    uint8_t buf[4];
+    double f_clkin = 16000000.0;
+
+    // Zero out the entire packet memory first
+    memset(pkt, 0, sizeof(AMCISS_Packet_t));
+
+    for (uint8_t i = 0; i < 32; i++)
+    {
+        /* 1. Read Hardware Registers */
+        hal_gpio_csSelect(i);
+        ldc1101_read_extendedN(0x21, buf, 4);
+        hal_gpio_csRelease(i);
+
+        pkt->rp[i]  = (uint16_t)((buf[1] << 8) | buf[0]);
+        pkt->ldc[i] = (uint16_t)((buf[3] << 8) | buf[2]);
+
+        /* 2. Calculate Physical Frequency */
+        uint32_t freq_hz = (pkt->ldc[i] > 0u)
+                           ? (uint32_t)((f_clkin * 384.0) / (3.0 * (double)pkt->ldc[i]))
+                           : 0u;
+        pkt->freq_hz[i] = freq_hz;
+
+        /* 3. Run the Digital Signal Processing Math */
+        bool metal = Detector_Update(&myDetector[i], (double)freq_hz);
+
+        /* 4. Pack the math results for the Python GUI! */
+        pkt->deviation[i]  = (int32_t)myDetector[i].deviation;
+        pkt->is_metal[i]   = metal ? 1 : 0;
+        pkt->calib_done[i] = myDetector[i].calib_done ? 1 : 0;
+    }
+}
+/* USER CODE END 2 */

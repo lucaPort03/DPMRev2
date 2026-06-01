@@ -1,0 +1,80 @@
+#ifndef DETECTION_H
+#define DETECTION_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define CALIB_SAMPLES   60000u
+#define THRESHOLD_K     4.0
+
+/* ================================================================
+ *  CONFIRM_SAMPLES
+ *
+ *  How many consecutive samples must exceed the threshold before
+ *  metal_det is set true.
+ *
+ *  At ~200 Hz loop rate, a metal piece passing at 2 m/s over a
+ *  ~10 mm sensor covers the sensor in ~5 ms = ~1 sample.
+ *  Set to 1 to trigger on the very first crossing (fastest response).
+ *  Raise to 2 or 3 to reject single-sample noise spikes.
+ *
+ *  Recommended starting value: 2
+ * ================================================================ */
+#define CONFIRM_SAMPLES  1u
+
+/* ================================================================
+ *  RELEASE_RATIO
+ *
+ *  Hysteresis for turning metal_det OFF.
+ *  metal_det is cleared only when deviation drops below:
+ *    threshold * RELEASE_RATIO
+ *
+ *  0.5 means the signal must fall to half the threshold before
+ *  releasing — prevents rapid on/off flickering when the deviation
+ *  hovers near the threshold boundary.
+ *
+ *  Recommended starting value: 0.5
+ * ================================================================ */
+#define RELEASE_RATIO    0.5
+
+typedef struct {
+
+    /* ── Band-pass filter delay registers ── */
+    double x1, x2;
+    double y1, y2;
+    double y_bpfilt;
+
+    /* ── Calibration accumulators (Welford algorithm) ── */
+    uint32_t calib_count;
+    bool     calib_done;
+
+    /* Welford state for the RAW frequency */
+    double raw_mean;
+    double raw_M2;
+
+    /* Welford state for the FILTERED signal */
+    double filt_mean;
+    double filt_M2;
+    double filt_std;
+
+    /* ── Frozen detection parameters ── */
+    double baseline;
+    double threshold;
+
+    /* ── Runtime outputs ── */
+    double   deviation;
+    bool     metal_det;
+
+    /* ── Internal confirmation counter ──
+     *    Counts consecutive samples above threshold.
+     *    metal_det only goes true once this reaches CONFIRM_SAMPLES. */
+    uint32_t confirm_count;
+
+} DetectorState;
+
+/* ── Public API ── */
+void Detector_Init     (DetectorState *s);
+bool Detector_Update   (DetectorState *s, double x_raw_hz);
+bool Detector_CalibDone(const DetectorState *s);
+
+#endif /* DETECTION_H */

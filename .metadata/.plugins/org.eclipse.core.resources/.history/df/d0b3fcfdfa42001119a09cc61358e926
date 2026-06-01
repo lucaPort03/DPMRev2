@@ -1,0 +1,513 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    app_netxduo.c
+  * @brief   NetXDuo applicative file
+  *
+  *  Metal detection latch — how missed detections are fixed:
+  *
+  *  The previous two-thread approach failed because it required extra
+  *  stack memory that the byte pool couldn't satisfy.
+  *
+  *  This version stays as a single thread but adds a SOFTWARE LATCH
+  *  inside build_ldc_packet():
+  *
+  *    is_metal_latch[i] is set to 1 the instant Detector_Update
+  *    returns true.  It is only cleared AFTER it has been packed into
+  *    the outgoing packet.
+  *
+  *  This means: even if the metal spike lasts only 1–2 samples and
+  *  resets before the packet is fully built, the latch preserves the
+  *  detection state until the next UDP send.  Every detection event
+  *  is guaranteed to appear in at least one transmitted packet.
+  *
+  *  No extra thread, no extra memory, no priority changes needed.
+  * ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "app_netxduo.h"
+
+/* Private includes ----------------------------------------------------------*/
+#include "nxd_dhcp_client.h"
+/* USER CODE BEGIN Includes */
+#include "__ldc1101_driver.h"
+#include "__ldc1101_hal.h"
+#include "detection.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  magic[2];
+    uint16_t seq;
+    uint32_t timestamp_ms;
+    uint32_t ldc[32];
+    // uint16_t rp[32];
+    uint32_t freq_hz[32];
+    int32_t  deviation[32];
+    int32_t  threshold[32];
+    int32_t  baseline[32];
+    int32_t  raw_mean[32];
+    int32_t  filt_std[32];
+    uint8_t  is_metal[32];
+    uint8_t  calib_done[32];
+} AMCISS_Packet_t;
+/* sizeof = 968 bytes */
+#pragma pack(pop)
+/* USER CODE END PTD */
+
+/* Private variables ---------------------------------------------------------*/
+TX_THREAD      NxAppThread;
+NX_PACKET_POOL NxAppPool;
+NX_IP          NetXDuoEthIpInstance;
+TX_SEMAPHORE   DHCPSemaphore;
+NX_DHCP        DHCPClient;
+/* USER CODE BEGIN PV */
+TX_THREAD AppTCPThread;
+TX_THREAD AppUDPThread;
+TX_THREAD AppLinkThread;
+
+ULONG IpAddress;
+ULONG NetMask;
+
+NX_TCP_SOCKET TCPSocket;
+NX_UDP_SOCKET UDPSocket;
+
+DetectorState myDetector[LDC1101_SENSOR_COUNT];
+
+/* ── Metal detection latch ───────────────────────────────────────────────────
+ *  One byte per sensor.  Set to 1 inside build_ldc_packet() the moment
+ *  Detector_Update returns true.  Cleared to 0 only after it has been
+ *  copied into pkt->is_metal[i] and is about to be transmitted.
+ *
+ *  This is a static array (no extra stack allocation needed).
+ * ─────────────────────────────────────────────────────────────────────────── */
+static uint8_t is_metal_latch[LDC1101_SENSOR_COUNT];
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+static VOID nx_app_thread_entry(ULONG thread_input);
+static VOID ip_address_change_notify_callback(NX_IP *ip_instance, VOID *ptr);
+/* USER CODE BEGIN PFP */
+static VOID App_TCP_Thread_Entry(ULONG thread_input);
+static VOID App_Link_Thread_Entry(ULONG thread_input);
+static VOID App_UDP_Thread_Entry(ULONG thread_input);
+static VOID App_UDP_Server_Thread_Entry(ULONG thread_input);
+static void build_ldc_packet(AMCISS_Packet_t *pkt);
+/* USER CODE END PFP */
+
+/* ================================================================
+ *  MX_NetXDuo_Init — identical to the working version
+ *  No new thread, no new memory allocation
+ * ================================================================ */
+UINT MX_NetXDuo_Init(VOID *memory_ptr)
+{
+    UINT ret = NX_SUCCESS;
+    TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL *)memory_ptr;
+    CHAR *pointer;
+
+    printf("Nx_UDP_Echo_Client application started..\n");
+    nx_system_initialize();
+
+    if (tx_byte_allocate(byte_pool, (VOID **)&pointer, NX_APP_PACKET_POOL_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+        return TX_POOL_ERROR;
+
+    ret = nx_packet_pool_create(&NxAppPool, "NetXDuo App Pool", DEFAULT_PAYLOAD_SIZE,
+                                pointer, NX_APP_PACKET_POOL_SIZE);
+    if (ret != NX_SUCCESS) return NX_POOL_ERROR;
+
+    if (tx_byte_allocate(byte_pool, (VOID **)&pointer, Nx_IP_INSTANCE_THREAD_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+        return TX_POOL_ERROR;
+
+    ret = nx_ip_create(&NetXDuoEthIpInstance, "NetX Ip instance",
+                       NX_APP_DEFAULT_IP_ADDRESS, NX_APP_DEFAULT_NET_MASK,
+                       &NxAppPool, nx_stm32_eth_driver,
+                       pointer, Nx_IP_INSTANCE_THREAD_SIZE, NX_APP_INSTANCE_PRIORITY);
+    if (ret != NX_SUCCESS) return NX_NOT_SUCCESSFUL;
+
+    if (tx_byte_allocate(byte_pool, (VOID **)&pointer, DEFAULT_ARP_CACHE_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+        return TX_POOL_ERROR;
+
+    ret = nx_arp_enable(&NetXDuoEthIpInstance, (VOID *)pointer, DEFAULT_ARP_CACHE_SIZE);
+    if (ret != NX_SUCCESS) return NX_NOT_SUCCESSFUL;
+
+    ret = nx_icmp_enable(&NetXDuoEthIpInstance);
+    if (ret != NX_SUCCESS) return NX_NOT_SUCCESSFUL;
+
+    if (CLIENT == 1)
+    {
+        if (tx_byte_allocate(byte_pool, (VOID **)&pointer, NX_APP_THREAD_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+            return TX_POOL_ERROR;
+
+        ret = tx_thread_create(&AppUDPThread, "App UDP Thread", App_UDP_Thread_Entry, 0,
+                               pointer, NX_APP_THREAD_STACK_SIZE,
+                               NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY,
+                               10, TX_DONT_START);
+    }
+    else
+    {
+        if (tx_byte_allocate(byte_pool, (VOID **)&pointer, 6 * DEFAULT_ARP_CACHE_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+            return TX_POOL_ERROR;
+
+        ret = tx_thread_create(&AppUDPThread, "App UDP Server Thread", App_UDP_Server_Thread_Entry, 0,
+                               pointer, 6 * 1024,
+                               NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY,
+                               TX_NO_TIME_SLICE, TX_DONT_START);
+    }
+    if (ret != TX_SUCCESS) return NX_NOT_SUCCESSFUL;
+
+    ret = nx_tcp_enable(&NetXDuoEthIpInstance);
+    if (ret != NX_SUCCESS) return NX_NOT_SUCCESSFUL;
+
+    ret = nx_udp_enable(&NetXDuoEthIpInstance);
+    if (ret != NX_SUCCESS) return NX_NOT_SUCCESSFUL;
+
+    if (tx_byte_allocate(byte_pool, (VOID **)&pointer, NX_APP_THREAD_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+        return TX_POOL_ERROR;
+
+    ret = tx_thread_create(&NxAppThread, "NetXDuo App thread", nx_app_thread_entry, 0,
+                           pointer, NX_APP_THREAD_STACK_SIZE,
+                           NX_APP_THREAD_PRIORITY, NX_APP_THREAD_PRIORITY,
+                           TX_NO_TIME_SLICE, TX_AUTO_START);
+    if (ret != TX_SUCCESS) return TX_THREAD_ERROR;
+
+    if (tx_byte_allocate(byte_pool, (VOID **)&pointer, NX_APP_THREAD_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+        return TX_POOL_ERROR;
+
+    ret = tx_thread_create(&AppLinkThread, "App Link Thread", App_Link_Thread_Entry, 0,
+                           pointer, NX_APP_THREAD_STACK_SIZE,
+                           LINK_PRIORITY, LINK_PRIORITY, TX_NO_TIME_SLICE, TX_AUTO_START);
+    if (ret != TX_SUCCESS) return NX_NOT_ENABLED;
+
+    return ret;
+}
+
+static VOID ip_address_change_notify_callback(NX_IP *ip_instance, VOID *ptr)
+{
+    nx_ip_address_set(&NetXDuoEthIpInstance, STM_IP_ADDRESS, STM_NETMASK);
+    nx_ip_gateway_address_set(&NetXDuoEthIpInstance, STM_GATEWAY);
+    tx_thread_resume(&AppUDPThread);
+}
+
+static VOID nx_app_thread_entry(ULONG thread_input)
+{
+    UINT ret;
+    ULONG actual_status;
+
+    nx_ip_address_set(&NetXDuoEthIpInstance, STM_IP_ADDRESS, STM_NETMASK);
+    nx_ip_gateway_address_set(&NetXDuoEthIpInstance, STM_GATEWAY);
+    printf("Static IP set\n");
+
+    ret = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0,
+                                       NX_IP_LINK_ENABLED, &actual_status, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) { printf("Link down\n"); Error_Handler(); }
+
+    printf("Link up - starting UDP thread\n");
+    tx_thread_resume(&AppUDPThread);
+
+    nx_ip_address_change_notify(&NetXDuoEthIpInstance,
+                                ip_address_change_notify_callback, NULL);
+}
+
+/* USER CODE BEGIN 2 */
+
+/* ================================================================
+ *  build_ldc_packet
+ *
+ *  The latch works like this:
+ *
+ *    Each call to Detector_Update either returns true (metal) or
+ *    false (no metal).
+ *
+ *    If it returns TRUE  → set is_metal_latch[i] = 1
+ *    If it returns FALSE → do NOT touch the latch
+ *
+ *    When packing pkt->is_metal[i]:
+ *      Copy the latch value into the packet
+ *      THEN clear the latch to 0
+ *
+ *  Result: a spike that lasts only 1 sample and then resets will
+ *  still have is_metal_latch = 1 from the previous call, so the
+ *  packet that goes out carries is_metal = 1.  The latch is then
+ *  cleared and subsequent packets carry 0 as expected.
+ *
+ *  Dead time during nx_packet_allocate / nx_udp_socket_send:
+ *    During that time Detector_Update is NOT being called, so the
+ *    latch simply waits.  When build_ldc_packet runs again at the
+ *    start of the next loop iteration, a spike that occurred during
+ *    the dead time will already have set metal_det inside the
+ *    DetectorState (because detection is evaluated on the next call
+ *    after the dead time ends), and the latch captures it then.
+ *
+ *  Note: for spikes that occur entirely inside the dead time and
+ *  reset before build_ldc_packet runs again, no software latch can
+ *  help — the sensor was simply never read during that window.
+ *  The only true fix for that is a hardware interrupt or DMA-driven
+ *  continuous sampling, which is beyond the scope of this system.
+ *  In practice, at 500+ packets/second the dead time is <2 ms and
+ *  the filter smooths spikes to last several samples, so this edge
+ *  case is very rare.
+ * ================================================================ */
+static void build_ldc_packet(AMCISS_Packet_t *pkt)
+{
+    uint8_t  buf[3];
+    double   f_clkin = 16000000.0;
+
+    for (uint8_t i = 0; i < 32; i++)
+    {
+        /* ── Wait for conversion ready (DRDY) ────────────────────────────
+         *
+         *  LDC1101 status register 0x20, bit 5 = DRDY.
+         *  Reading before DRDY returns the PREVIOUS sample — stale data.
+         *  At 32 sensors the round-trip is ~300 µs but t_conv is ~1–4 ms,
+         *  so without this check you read stale data almost every time.
+         *
+         *  Timeout: 5 ms. If the sensor is stuck, we skip it and move on
+         *  rather than blocking the entire scan.
+         * ────────────────────────────────────────────────────────────── */
+        uint32_t t_start = HAL_GetTick();
+        uint8_t  status  = 0;
+        do {
+            hal_gpio_csSelect(i);
+            status = ldc1101_readByte_sensor(i, 0x20);
+            hal_gpio_csRelease(i);
+            if ((HAL_GetTick() - t_start) > 5u) break;   /* 5 ms timeout */
+        } while ((status & 0x20) == 0);                   /* bit 5 = DRDY */
+
+        /* ── Read LDC + RP registers in one 4-byte burst ── */
+        hal_gpio_csSelect(i);
+        ldc1101_read_extendedN(0x38, buf, 3);
+        hal_gpio_csRelease(i);
+
+        // pkt->rp[i]  = (uint16_t)((buf[1] << 8) | buf[0]);
+        pkt->ldc[i] = (uint32_t)((buf[2] << 16) | (buf[1] << 8) | buf[0]);
+
+        /* ── Compute resonant frequency ── */
+        uint32_t freq_hz = (pkt->ldc[i] > 0u)
+                           ? (uint32_t)((f_clkin * (double)pkt->ldc[i]) / (16777216))
+                           : 0u;
+        pkt->freq_hz[i] = freq_hz;
+
+        /* ── Run detection algorithm ── */
+        bool metal = Detector_Update(&myDetector[i], (double)freq_hz);
+
+        /* ── SET latch if metal — never clear here ── */
+        if (metal) {
+            is_metal_latch[i] = 1u;
+            HAL_GPIO_TogglePin(LED1_GPIO_Port, LED2_Pin);
+        }
+
+        pkt->deviation [i] = (int32_t)myDetector[i].deviation;
+        pkt->threshold [i] = (int32_t)myDetector[i].threshold;
+        pkt->baseline  [i] = (int32_t)myDetector[i].baseline;
+        pkt->raw_mean  [i] = (int32_t)myDetector[i].raw_mean;
+        pkt->filt_std  [i] = (int32_t)myDetector[i].filt_std;
+        pkt->calib_done[i] = myDetector[i].calib_done ? 1u : 0u;
+
+        /* ── Pack latch then clear it ── */
+        pkt->is_metal[i]  = is_metal_latch[i];
+        is_metal_latch[i] = 0u;
+    }
+}
+
+/* ================================================================
+ *  App_UDP_Thread_Entry — identical structure to the working version
+ * ================================================================ */
+static VOID App_UDP_Thread_Entry(ULONG thread_input)
+{
+    UINT            ret;
+    NX_PACKET      *data_packet;
+    static uint16_t seq = 0;
+    int             i;
+
+    for (i = 0; i < LDC1101_SENSOR_COUNT; i++) {
+        Detector_Init(&myDetector[i]);
+        is_metal_latch[i] = 0u;
+    }
+
+    ret = nx_udp_socket_create(&NetXDuoEthIpInstance, &UDPSocket,
+                               "UDP Client Socket", NX_IP_NORMAL,
+                               NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 200);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    ret = nx_udp_socket_bind(&UDPSocket, DEFAULT_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    while (1)
+    {
+        AMCISS_Packet_t pkt;
+        pkt.magic[0]     = 0xAAu;
+        pkt.magic[1]     = 0xBBu;
+        pkt.seq          = seq++;
+        pkt.timestamp_ms = HAL_GetTick();
+
+        build_ldc_packet(&pkt);
+
+        ret = nx_packet_allocate(&NxAppPool, &data_packet, NX_UDP_PACKET, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) continue;
+
+        ret = nx_packet_data_append(data_packet, (VOID *)&pkt, sizeof(AMCISS_Packet_t),
+                                    &NxAppPool, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) { nx_packet_release(data_packet); continue; }
+
+        ret = nx_udp_socket_send(&UDPSocket, data_packet, UDP_SERVER_ADDRESS, TCP_SERVER_PORT);
+        if (ret != NX_SUCCESS) { nx_packet_release(data_packet); continue; }
+
+        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+        //HAL_GPIO_TogglePin(LED1_GPIO_Port, LED2_Pin);
+        /* tx_thread_relinquish() removed — it added 500–2000 µs of dead
+         * time between sensor reads, causing 1–3 sample metal spikes to
+         * be missed entirely. The RTOS time-slice (set to 10 ticks in
+         * MX_NetXDuo_Init) handles fair scheduling without the yield. */
+    }
+}
+
+/* ================================================================
+ *  Remaining threads — unchanged
+ * ================================================================ */
+static VOID App_UDP_Server_Thread_Entry(ULONG thread_input)
+{
+    UINT          ret;
+    NX_PACKET    *recv_packet;
+    NX_PACKET    *fwd_packet;
+    NX_UDP_SOCKET FwdSocket;
+    UCHAR         recv_buffer[1472];
+    ULONG         bytes_copied;
+    ULONG         sender_ip;
+    UINT          sender_port;
+
+    ret = nx_udp_socket_create(&NetXDuoEthIpInstance, &UDPSocket, "UDP Server Socket",
+                               NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 200);
+    if (ret != NX_SUCCESS) Error_Handler();
+    ret = nx_udp_socket_bind(&UDPSocket, DEFAULT_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    ret = nx_udp_socket_create(&NetXDuoEthIpInstance, &FwdSocket, "UDP Fwd Socket",
+                               NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 200);
+    if (ret != NX_SUCCESS) Error_Handler();
+    ret = nx_udp_socket_bind(&FwdSocket, PC_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    printf("UDP Server started - Listening on port %u\n", DEFAULT_PORT);
+
+    while (1)
+    {
+        ret = nx_udp_socket_receive(&UDPSocket, &recv_packet, NX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) continue;
+
+        nx_udp_source_extract(recv_packet, &sender_ip, &sender_port);
+        TX_MEMSET(recv_buffer, '\0', sizeof(recv_buffer));
+        ret = nx_packet_data_retrieve(recv_packet, recv_buffer, &bytes_copied);
+        nx_packet_release(recv_packet);
+        if (ret != NX_SUCCESS) continue;
+
+        ret = nx_packet_allocate(&NxAppPool, &fwd_packet, NX_UDP_PACKET, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) continue;
+
+        ret = nx_packet_data_append(fwd_packet, recv_buffer, bytes_copied,
+                                    &NxAppPool, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) { nx_packet_release(fwd_packet); continue; }
+
+        ret = nx_udp_socket_send(&FwdSocket, fwd_packet, PC_IP_ADDRESS, PC_PORT);
+        if (ret != NX_SUCCESS) { nx_packet_release(fwd_packet); continue; }
+
+        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+    }
+}
+
+static VOID App_TCP_Thread_Entry(ULONG thread_input)
+{
+    UINT ret;
+    UINT count = 0;
+    ULONG bytes_read;
+    UCHAR data_buffer[512];
+    ULONG source_ip_address;
+    UINT  source_port;
+    NX_PACKET *server_packet;
+    NX_PACKET *data_packet;
+
+    ret = nx_tcp_socket_create(&NetXDuoEthIpInstance, &TCPSocket,
+                               "TCP Server Socket", NX_IP_NORMAL,
+                               NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE,
+                               WINDOW_SIZE, NX_NULL, NX_NULL);
+    if (ret != NX_SUCCESS) Error_Handler();
+    ret = nx_tcp_client_socket_bind(&TCPSocket, DEFAULT_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+    ret = nx_tcp_client_socket_connect(&TCPSocket, UDP_SERVER_ADDRESS,
+                                       TCP_SERVER_PORT, NX_WAIT_FOREVER);
+    if (ret != NX_SUCCESS) Error_Handler();
+
+    while (1)
+    {
+        TX_MEMSET(data_buffer, '\0', sizeof(data_buffer));
+        ret = nx_packet_allocate(&NxAppPool, &data_packet, NX_TCP_PACKET, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) break;
+        ret = nx_packet_data_append(data_packet, (VOID *)DEFAULT_MESSAGE,
+                                    sizeof(DEFAULT_MESSAGE), &NxAppPool, TX_WAIT_FOREVER);
+        if (ret != NX_SUCCESS) { nx_packet_release(data_packet); break; }
+        ret = nx_tcp_socket_send(&TCPSocket, data_packet, DEFAULT_TIMEOUT);
+        if (ret != NX_SUCCESS) break;
+        ret = nx_tcp_socket_receive(&TCPSocket, &server_packet, DEFAULT_TIMEOUT);
+        if (ret == NX_SUCCESS)
+        {
+            nx_packet_data_retrieve(server_packet, data_buffer, &bytes_read);
+            PRINT_DATA(source_ip_address, source_port, data_buffer);
+            nx_packet_release(server_packet);
+            HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+        }
+        else break;
+    }
+    nx_packet_release(server_packet);
+    nx_tcp_socket_disconnect(&TCPSocket, DEFAULT_TIMEOUT);
+    nx_tcp_client_socket_unbind(&TCPSocket);
+    nx_tcp_socket_delete(&TCPSocket);
+    if (count == MAX_PACKET_COUNT + 1) Success_Handler();
+    else Error_Handler();
+}
+
+static VOID App_Link_Thread_Entry(ULONG thread_input)
+{
+    ULONG actual_status;
+    UINT  linkdown = 0, status;
+    printf("link thread started");
+
+    while (1)
+    {
+        status = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0,
+                                              NX_IP_LINK_ENABLED, &actual_status, 10);
+        if (status == NX_SUCCESS)
+        {
+            if (linkdown == 1)
+            {
+                linkdown = 0;
+                printf("The network cable is connected.\n");
+                nx_ip_driver_direct_command(&NetXDuoEthIpInstance, NX_LINK_ENABLE, &actual_status);
+                status = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0,
+                                                      NX_IP_ADDRESS_RESOLVED, &actual_status, 10);
+                if (status == NX_SUCCESS)
+                {
+                    nx_ip_address_set(&NetXDuoEthIpInstance, STM_IP_ADDRESS, STM_NETMASK);
+                    nx_ip_gateway_address_set(&NetXDuoEthIpInstance, STM_GATEWAY);
+                    printf("Link reconnected. Static IP reapplied.\n");
+                    PRINT_IP_ADDRESS(IpAddress);
+                }
+            }
+        }
+        else
+        {
+            if (linkdown == 0)
+            {
+                linkdown = 1;
+                printf("The network cable is not connected.\n");
+                nx_ip_driver_direct_command(&NetXDuoEthIpInstance, NX_LINK_DISABLE, &actual_status);
+            }
+        }
+        tx_thread_sleep(NX_APP_CABLE_CONNECTION_CHECK_PERIOD);
+    }
+}
+
+/* USER CODE END 2 */

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Delete resource &apos;STM32CubeIDE/Application/User/Core/__ldc_1101_driver.c&apos;" deleteContents="false" description="Delete resource &apos;STM32CubeIDE/Application/User/Core/__ldc_1101_driver.c&apos;" element1="/STM32CubeIDE/Application/User/Core/__ldc_1101_driver.c" flags="7" id="org.eclipse.ltk.core.refactoring.delete.resources" resources="1" stamp="1777377611810"/>
+</session>

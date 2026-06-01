@@ -1,0 +1,149 @@
+#include "detection.h"
+#include <math.h>
+
+static const double B0 =  0.05;
+static const double B1 =  0.00;
+static const double B2 = -0.05;
+static const double A1 = -1.80;
+static const double A2 =  0.81;
+
+static void welford_step(double x, uint32_t n,
+                          double *mean, double *M2)
+{
+    double delta = x - *mean;
+    *mean       += delta / (double)n;
+    *M2         += delta * (x - *mean);
+}
+
+void Detector_Init(DetectorState *s)
+{
+    s->x1 = 0.0;  s->x2 = 0.0;
+    s->y1 = 0.0;  s->y2 = 0.0;
+    s->y_bpfilt  = 0.0;
+
+    s->calib_count = 0u;
+    s->calib_done  = false;
+
+    s->raw_mean  = 0.0;  s->raw_M2  = 0.0;
+    s->filt_mean = 0.0;  s->filt_M2 = 0.0;
+    s->filt_std  = 0.0;
+
+    s->baseline      = 0.0;
+    s->threshold     = 0.0;
+    s->deviation     = 0.0;
+    s->metal_det     = false;
+    s->confirm_count = 0u;
+}
+
+bool Detector_Update(DetectorState *s, double x_raw_hz)
+{
+    /* ── Band-pass filter ── */
+    s->y_bpfilt = (B0 * x_raw_hz)
+                + (B1 * s->x1)
+                + (B2 * s->x2)
+                - (A1 * s->y1)
+                - (A2 * s->y2);
+
+    s->x2 = s->x1;    s->x1 = x_raw_hz;
+    s->y2 = s->y1;    s->y1 = s->y_bpfilt;
+
+    /* ── Phase 1: Calibration ── */
+    if (!s->calib_done)
+    {
+        s->calib_count++;
+
+        welford_step(x_raw_hz, s->calib_count,
+                     &s->raw_mean, &s->raw_M2);
+
+        if (s->calib_count > 400u)
+        {
+            uint32_t filt_n = s->calib_count - 400u;
+            welford_step(s->y_bpfilt, filt_n,
+                         &s->filt_mean, &s->filt_M2);
+        }
+
+        if (s->calib_count >= CALIB_SAMPLES)
+        {
+            s->baseline = s->raw_mean;
+
+            uint32_t filt_n = s->calib_count - 20u;
+            if (filt_n >= 2u) {
+                s->filt_std = sqrt(s->filt_M2 / (double)(filt_n - 1u));
+            } else {
+                s->filt_std = 0.0;
+            }
+
+            s->threshold  = THRESHOLD_K * s->filt_std;
+            s->calib_done = true;
+        }
+
+        s->metal_det     = false;
+        s->deviation     = 0.0;
+        s->confirm_count = 0u;
+        return false;
+    }
+
+    /* ── Phase 2: Detection ── */
+    s->deviation = s->y_bpfilt;
+
+    if (!s->metal_det)
+    {
+        /* ── Rising edge with confirmation ──────────────────────────
+         *
+         *  Count consecutive samples above threshold.
+         *  Only declare metal once CONFIRM_SAMPLES have accumulated.
+         *  This rejects single-sample noise spikes that cross the
+         *  threshold but immediately fall back.
+         *
+         *  If the deviation drops below threshold before we reach
+         *  CONFIRM_SAMPLES, reset the counter — it was a noise spike.
+         */
+        if (s->deviation > s->threshold)
+        {
+            s->confirm_count++;
+            if (s->confirm_count >= CONFIRM_SAMPLES)
+            {
+                s->metal_det = true;
+                /* keep confirm_count non-zero so we remember we're active */
+            }
+        }
+        else
+        {
+            /* Fell back below threshold before confirming — reset */
+            s->confirm_count = 0u;
+        }
+    }
+    else
+    {
+        /* ── Falling edge with hysteresis ────────────────────────────
+         *
+         *  Release metal_det only when the deviation drops below
+         *  threshold * RELEASE_RATIO (e.g. 50% of the threshold).
+         *
+         *  This prevents rapid on/off flickering when the deviation
+         *  hovers near the threshold boundary — a common problem when
+         *  the trailing edge of a metal piece grazes the sensor.
+         *
+         *  The release level is lower than the trigger level, forming
+         *  a hysteresis band:
+         *
+         *    threshold  ─────────────────────  (trigger level)
+         *                          ↑
+         *               hysteresis band
+         *                          ↓
+         *    threshold * 0.5 ───────────────── (release level)
+         */
+        if (s->deviation < (s->threshold * RELEASE_RATIO))
+        {
+            s->metal_det     = false;
+            s->confirm_count = 0u;
+        }
+    }
+
+    return s->metal_det;
+}
+
+bool Detector_CalibDone(const DetectorState *s)
+{
+    return s->calib_done;
+}
