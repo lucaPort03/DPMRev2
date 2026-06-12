@@ -1,4 +1,4 @@
-# AMCISS DPM Firmware — Developer Documentation
+# AMCISS DPM
 
 > **Scope:** This document covers the DPM firmware only and is intended for developers continuing work on this codebase. For hardware setup, physical installation, IP configuration, flashing instructions, and GUI usage refer to the [AMCISS Setup and User Guide](./Doc/).
 
