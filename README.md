@@ -16,6 +16,7 @@ Its responsibilities are:
 4. Detect metal presence across the delay-aligned sensor array and drive a flap actuator (via GPIO → PLC) with configurable timing.
 5. Forward a merged `DPM_Forward_Packet_t` to a PC for GUI visualisation.
 
+**Important:** Any code regeneration via STM32CubeMX or STM32CubeIDE will result in code in app_netxduo.c and app_netxduo.h to be reverted to the original state. If this happens, simply recopy and paste the code from this repository to restore functionality. 
 ---
 
 ## Project File Tree
@@ -52,7 +53,7 @@ DPMProj/
 ├── Nx_TCP_Echo_Client Debug.launch
 └── STM32H723ZGTX_FLASH.ld
 ```
-
+Many more files are included in this repository, however none were modified by the team. The main files in use are main.c and app_netx.c/h. All code for DPM operation is present there.
 ---
 
 ## Key Source Files
