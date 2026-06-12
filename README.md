@@ -53,7 +53,7 @@ DPMProj/
 ├── Nx_TCP_Echo_Client Debug.launch
 └── STM32H723ZGTX_FLASH.ld
 ```
-Many more files are included in this repository, however none were modified by the team. The main files in use are main.c and app_netx.c/h. All code for DPM operation is present there.
+Many more files are included in this repository, however none were modified by the team. The main files in use are main.c and app_netxduo.c/h. All code for DPM operation is present there.
 ---
 
 ## Key Source Files
